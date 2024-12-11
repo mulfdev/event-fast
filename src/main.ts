@@ -12,6 +12,9 @@ type EventNames = ExtractAbiEventNames<typeof uniAbi>;
 class EventProcessor {
     #turso: ReturnType<typeof createClient>;
     #queue: { event: EventNames; data: Log }[] = [];
+    #batchSize = 100;
+    #workers = 5;
+    #workersStarted = false;
 
     constructor(DB_URL: string | undefined, AUTH_TOKEN: string | undefined) {
         if (typeof DB_URL === "undefined" || typeof AUTH_TOKEN === "undefined") {
@@ -32,39 +35,55 @@ class EventProcessor {
             this.#queue.push({ event, data: log });
         }
 
-        this.processQueue();
+        if (this.#workersStarted === false) {
+            console.log("starting workers");
+            this.startWorkers();
+        }
     }
 
     get queue() {
         return this.#queue;
     }
 
-    async processQueue() {
-        for (let i = this.#queue.length - 1; i >= 0; i--) {
-            const item = this.#queue[i];
-            if (!item) break;
-            switch (item.event) {
-                case "Mint": {
-                    console.log("MINTED", item.data.logIndex);
-                    break;
-                }
-
-                case "Swap": {
-                    console.log("SWAPPED", item.data.logIndex);
-                    break;
-                }
-
-                case "Burn": {
-                    break;
-                }
-
-                default: {
-                    console.log("Got unaccounted event");
-                    break;
-                }
+    async processItem(item: { event: EventNames; data: Log }) {
+        switch (item.event) {
+            case "Mint": {
+                console.log("MINTED", item.data.logIndex);
+                break;
             }
-            this.#queue.splice(i, 1);
+
+            case "Swap": {
+                console.log("SWAPPED", item.data.logIndex);
+                break;
+            }
+
+            case "Burn": {
+                break;
+            }
+
+            default: {
+                console.log("Got unaccounted event");
+                break;
+            }
         }
+    }
+
+    async worker() {
+        while (this.#queue.length > 0) {
+            const batch = this.#queue.splice(0, this.#batchSize);
+            if (batch.length === 0) break;
+
+            await Promise.all(batch.map((item) => this.processItem(item)));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+    }
+
+    async startWorkers() {
+        const workers = Array(this.#workers)
+            .fill(null)
+            .map(() => this.worker());
+
+        await Promise.all(workers);
     }
 }
 
@@ -90,7 +109,7 @@ async function* getLogs({ startBlock, endBlock }: { startBlock: bigint; endBlock
 
         yield logs;
 
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
     yield null;
